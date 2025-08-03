@@ -134,7 +134,7 @@ const NodeComponent: React.FC<NodeProps> = ({
   return (
     <div
       ref={nodeRef}
-      className={`absolute bg-white border-2 rounded-lg shadow-md cursor-move p-2 flex flex-col justify-center ${
+      className={`bg-white border-2 rounded-lg shadow-md cursor-move p-2 flex flex-col justify-center ${
         isDragging 
           ? '' // No transitions during dragging
           : 'transition-all duration-200'
@@ -146,7 +146,6 @@ const NodeComponent: React.FC<NodeProps> = ({
             : 'border-gray-300'
       }`}
       style={{
-        transform: `translate(${node.position.x}px, ${node.position.y}px)`,
         width: '160px',
         height: '80px',
         userSelect: 'none',

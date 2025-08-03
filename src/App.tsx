@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Canvas, WorkflowUtils } from './lib';
 import type { WorkflowData } from './lib';
 
 function App() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+  
   const [workflow, setWorkflow] = useState<WorkflowData>(() => {
     const node1 = WorkflowUtils.createNode(
       'node-1',
@@ -71,50 +74,59 @@ function App() {
     });
   };
 
+  // Update canvas size when container resizes
+  useEffect(() => {
+    const updateCanvasSize = () => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        setCanvasSize({ width: Math.floor(width), height: Math.floor(height) });
+      }
+    };
+
+    updateCanvasSize();
+    window.addEventListener('resize', updateCanvasSize);
+    return () => window.removeEventListener('resize', updateCanvasSize);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-900 mb-6">
-          Flowy - Workflow Builder Demo
-        </h1>
-        
-        <div className="bg-white rounded-lg shadow-md p-4 mb-6">
-          <div className="flex gap-4 mb-4">
+    <div className="flex flex-col w-screen h-screen bg-gray-100" style={{ width: '100svw', height: '100svh' }}>
+      {/* Header Bar - Fixed height, no grow/shrink */}
+      <header className="flex-grow-0 flex-shrink-0 bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">
+            Flowy - Workflow Builder
+          </h1>
+          
+          <div className="flex gap-3">
             <button
               onClick={addRandomNode}
-              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+              className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors font-medium"
             >
-              Add Random Node
+              Add Node
             </button>
             <button
               onClick={exportWorkflow}
-              className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
+              className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors font-medium"
             >
-              Export Workflow
+              Export JSON
             </button>
           </div>
-          
-          <Canvas
-            workflow={workflow}
-            onWorkflowChange={setWorkflow}
-            width={1000}
-            height={600}
-            className="border-2 border-gray-200 rounded"
-          />
         </div>
-        
-        <div className="bg-white rounded-lg shadow-md p-4">
-          <h2 className="text-xl font-semibold mb-2">Instructions:</h2>
-          <ul className="list-disc list-inside text-gray-700 space-y-1">
-            <li>Drag nodes to move them around</li>
-            <li>Connect nodes by dragging from output handles (right side) to input handles (left side)</li>
-            <li>Click the × button on nodes to delete them</li>
-            <li>Hover over wires and click the delete button to remove connections</li>
-            <li>Add new nodes with the "Add Random Node" button</li>
-            <li>Export your workflow to JSON</li>
-          </ul>
-        </div>
-      </div>
+      </header>
+      
+      {/* Canvas Container - Grows to fill remaining space */}
+      <main 
+        ref={containerRef}
+        className="flex-grow flex-shrink overflow-hidden bg-gray-50"
+      >
+        <Canvas
+          workflow={workflow}
+          onWorkflowChange={setWorkflow}
+          width={canvasSize.width}
+          height={canvasSize.height}
+          className="w-full h-full"
+        />
+      </main>
     </div>
   );
 }

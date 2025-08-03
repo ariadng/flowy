@@ -39,6 +39,19 @@ export const Canvas: React.FC<CanvasProps> = ({
     hasMouseMoved: false,
   });
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
+  
+  // Viewport/Panning state
+  const [viewportTransform, setViewportTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  
+  // Touch state
+  const [touchState, setTouchState] = useState<{
+    initialDistance: number;
+    initialScale: number;
+    initialCenter: { x: number; y: number };
+    lastTouchCenter: { x: number; y: number };
+  } | null>(null);
 
   // Constants for snapping
   const SNAP_THRESHOLD = 8; // pixels
@@ -324,22 +337,29 @@ export const Canvas: React.FC<CanvasProps> = ({
   const handleMouseMove = useCallback((event: MouseEvent) => {
     if (connectionState.isConnecting && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
+      // Convert screen coordinates to canvas coordinates considering viewport transform
+      const canvasX = (event.clientX - rect.left - viewportTransform.x) / viewportTransform.scale;
+      const canvasY = (event.clientY - rect.top - viewportTransform.y) / viewportTransform.scale;
+      
       setConnectionState(prev => ({
         ...prev,
         currentPosition: {
-          x: event.clientX - rect.left,
-          y: event.clientY - rect.top,
+          x: canvasX,
+          y: canvasY,
         },
         hasMouseMoved: true,
       }));
     }
-  }, [connectionState.isConnecting]);
+  }, [connectionState.isConnecting, viewportTransform]);
 
   const handleNodeSelect = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
   }, []);
 
   const handleCanvasClick = useCallback((event: React.MouseEvent) => {
+    // Only handle clicks if not panning
+    if (isPanning) return;
+    
     // Check if clicked on canvas background or SVG background
     const target = event.target as HTMLElement;
     const isCanvasBackground = target === canvasRef.current;
@@ -359,7 +379,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         });
       }
     }
-  }, [connectionState.isConnecting]);
+  }, [connectionState.isConnecting, isPanning]);
 
   // Handle keyboard events
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
@@ -395,12 +415,337 @@ export const Canvas: React.FC<CanvasProps> = ({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  // Panning handlers
+  const handleCanvasMouseDown = useCallback((event: React.MouseEvent) => {
+    // Only start panning if clicking on canvas background (not nodes or other elements)
+    const target = event.target as HTMLElement;
+    const isCanvasBackground = target === canvasRef.current;
+    const isSvgBackground = target.tagName === 'svg';
+    
+    if ((isCanvasBackground || isSvgBackground) && event.button === 0) {
+      setIsPanning(true);
+      setPanStart({
+        x: event.clientX - viewportTransform.x,
+        y: event.clientY - viewportTransform.y
+      });
+      event.preventDefault();
+    }
+  }, [viewportTransform]);
+
+  const handleCanvasMouseMove = useCallback((event: MouseEvent) => {
+    if (isPanning) {
+      const newX = event.clientX - panStart.x;
+      const newY = event.clientY - panStart.y;
+      
+      setViewportTransform(prev => ({
+        ...prev,
+        x: newX,
+        y: newY
+      }));
+    }
+  }, [isPanning, panStart]);
+
+  const handleCanvasMouseUp = useCallback(() => {
+    setIsPanning(false);
+  }, []);
+
+  // Add panning event listeners
+  React.useEffect(() => {
+    if (isPanning) {
+      document.addEventListener('mousemove', handleCanvasMouseMove);
+      document.addEventListener('mouseup', handleCanvasMouseUp);
+      return () => {
+        document.removeEventListener('mousemove', handleCanvasMouseMove);
+        document.removeEventListener('mouseup', handleCanvasMouseUp);
+      };
+    }
+  }, [isPanning, handleCanvasMouseMove, handleCanvasMouseUp]);
+
+  // Detect platform for zoom behavior
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+
+  // Zoom handler with platform-specific behavior
+  const handleWheel = useCallback((event: WheelEvent) => {
+    let shouldZoom = false;
+    
+    if (isMac) {
+      // Mac: Detect trackpad pinch (ctrlKey set by browser) OR trackpad scroll OR ctrl+mouse scroll
+      const isTrackpadPinch = event.ctrlKey; // Browser sets this for pinch gestures
+      const isTrackpadScroll = !event.ctrlKey && Math.abs(event.deltaY) < 50 && event.deltaY % 1 !== 0; // Trackpad has fractional values
+      const isCtrlScroll = event.ctrlKey && Math.abs(event.deltaY) >= 50; // Ctrl+mouse wheel
+      
+      shouldZoom = isTrackpadPinch || isTrackpadScroll || isCtrlScroll;
+    } else {
+      // Windows/Linux: Regular mouse scroll (without ctrl key)
+      shouldZoom = !event.ctrlKey;
+    }
+    
+    if (!shouldZoom) {
+      return; // Let browser handle normal scroll
+    }
+    
+    event.preventDefault();
+    
+    const zoomFactor = 0.1;
+    const zoomDirection = event.deltaY > 0 ? -1 : 1;
+    const newScale = Math.max(0.1, Math.min(3, viewportTransform.scale + (zoomDirection * zoomFactor)));
+    
+    if (newScale !== viewportTransform.scale && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      
+      // Calculate zoom center point
+      const scaleDelta = newScale / viewportTransform.scale;
+      const newX = mouseX - (mouseX - viewportTransform.x) * scaleDelta;
+      const newY = mouseY - (mouseY - viewportTransform.y) * scaleDelta;
+      
+      setViewportTransform({
+        x: newX,
+        y: newY,
+        scale: newScale
+      });
+    }
+  }, [viewportTransform, isMac]);
+
+  // Add wheel listener for zooming
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.addEventListener('wheel', handleWheel, { passive: false });
+      return () => canvas.removeEventListener('wheel', handleWheel);
+    }
+  }, [handleWheel]);
+
+  // Touch helper functions
+  const getTouchDistance = (touch1: Touch, touch2: Touch) => {
+    const dx = touch1.clientX - touch2.clientX;
+    const dy = touch1.clientY - touch2.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  const getTouchCenter = (touch1: Touch, touch2: Touch) => {
+    return {
+      x: (touch1.clientX + touch2.clientX) / 2,
+      y: (touch1.clientY + touch2.clientY) / 2
+    };
+  };
+
+  // Touch event handlers
+  const handleTouchStart = useCallback((event: React.TouchEvent) => {
+    if (event.touches.length === 2) {
+      // Two fingers - start pinch zoom
+      const touch1 = event.touches[0];
+      const touch2 = event.touches[1];
+      const distance = getTouchDistance(touch1, touch2);
+      const center = getTouchCenter(touch1, touch2);
+      
+      if (canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const canvasCenter = {
+          x: center.x - rect.left,
+          y: center.y - rect.top
+        };
+        
+        setTouchState({
+          initialDistance: distance,
+          initialScale: viewportTransform.scale,
+          initialCenter: canvasCenter,
+          lastTouchCenter: canvasCenter
+        });
+      }
+      
+      event.preventDefault();
+    } else if (event.touches.length === 1) {
+      // Single finger - start pan
+      const touch = event.touches[0];
+      const target = event.target as HTMLElement;
+      const isCanvasBackground = target === canvasRef.current || target.tagName === 'svg';
+      
+      if (isCanvasBackground) {
+        setIsPanning(true);
+        setPanStart({
+          x: touch.clientX - viewportTransform.x,
+          y: touch.clientY - viewportTransform.y
+        });
+        event.preventDefault();
+      }
+    }
+  }, [viewportTransform]);
+
+  const handleTouchMove = useCallback((event: React.TouchEvent) => {
+    if (event.touches.length === 2 && touchState) {
+      // Two fingers - pinch zoom
+      const touch1 = event.touches[0];
+      const touch2 = event.touches[1];
+      const distance = getTouchDistance(touch1, touch2);
+      const center = getTouchCenter(touch1, touch2);
+      
+      if (canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const canvasCenter = {
+          x: center.x - rect.left,
+          y: center.y - rect.top
+        };
+        
+        // Calculate new scale
+        const scaleChange = distance / touchState.initialDistance;
+        const newScale = Math.max(0.1, Math.min(3, touchState.initialScale * scaleChange));
+        
+        // Calculate new position (zoom to center point)
+        const scaleDelta = newScale / viewportTransform.scale;
+        const newX = touchState.initialCenter.x - (touchState.initialCenter.x - viewportTransform.x) * scaleDelta;
+        const newY = touchState.initialCenter.y - (touchState.initialCenter.y - viewportTransform.y) * scaleDelta;
+        
+        setViewportTransform({
+          x: newX,
+          y: newY,
+          scale: newScale
+        });
+      }
+      
+      event.preventDefault();
+    } else if (event.touches.length === 1 && isPanning) {
+      // Single finger - pan
+      const touch = event.touches[0];
+      const newX = touch.clientX - panStart.x;
+      const newY = touch.clientY - panStart.y;
+      
+      setViewportTransform(prev => ({
+        ...prev,
+        x: newX,
+        y: newY
+      }));
+      
+      event.preventDefault();
+    }
+  }, [touchState, isPanning, panStart, viewportTransform]);
+
+  const handleTouchEnd = useCallback((event: React.TouchEvent) => {
+    if (event.touches.length < 2) {
+      setTouchState(null);
+    }
+    if (event.touches.length === 0) {
+      setIsPanning(false);
+    }
+  }, []);
+
+  // Find the center of the top-left-most node
+  const getContentCenter = useCallback(() => {
+    if (workflow.nodes.length === 0) {
+      // Fallback to canvas center if no nodes
+      return { x: width / 2, y: height / 2 };
+    }
+    
+    // Find the top-left-most node (smallest x + y sum)
+    const topLeftNode = workflow.nodes.reduce((closest, node) => {
+      const nodeScore = node.position.x + node.position.y;
+      const closestScore = closest.position.x + closest.position.y;
+      return nodeScore < closestScore ? node : closest;
+    });
+    
+    // Return center of that node in world coordinates, then convert to screen coordinates
+    const nodeCenterX = topLeftNode.position.x + NODE_WIDTH / 2;
+    const nodeCenterY = topLeftNode.position.y + NODE_HEIGHT / 2;
+    
+    // Convert world coordinates to current screen coordinates
+    const screenX = nodeCenterX * viewportTransform.scale + viewportTransform.x;
+    const screenY = nodeCenterY * viewportTransform.scale + viewportTransform.y;
+    
+    return { x: screenX, y: screenY };
+  }, [workflow.nodes, width, height, viewportTransform]);
+
+  // Zoom control functions
+  const zoomIn = useCallback(() => {
+    let newScale = Math.min(3, viewportTransform.scale + 0.2);
+    
+    // Snap to 100% if close
+    if (Math.abs(newScale - 1) < 0.1) {
+      newScale = 1;
+    }
+    
+    if (newScale !== viewportTransform.scale) {
+      // Zoom to center of top-left-most node
+      const contentCenter = getContentCenter();
+      const scaleDelta = newScale / viewportTransform.scale;
+      const newX = contentCenter.x - (contentCenter.x - viewportTransform.x) * scaleDelta;
+      const newY = contentCenter.y - (contentCenter.y - viewportTransform.y) * scaleDelta;
+      
+      setViewportTransform({
+        x: newX,
+        y: newY,
+        scale: newScale
+      });
+    }
+  }, [viewportTransform, getContentCenter]);
+
+  const zoomOut = useCallback(() => {
+    let newScale = Math.max(0.1, viewportTransform.scale - 0.2);
+    
+    // Snap to 100% if close
+    if (Math.abs(newScale - 1) < 0.1) {
+      newScale = 1;
+    }
+    
+    if (newScale !== viewportTransform.scale) {
+      // Zoom to center of top-left-most node
+      const contentCenter = getContentCenter();
+      const scaleDelta = newScale / viewportTransform.scale;
+      const newX = contentCenter.x - (contentCenter.x - viewportTransform.x) * scaleDelta;
+      const newY = contentCenter.y - (contentCenter.y - viewportTransform.y) * scaleDelta;
+      
+      setViewportTransform({
+        x: newX,
+        y: newY,
+        scale: newScale
+      });
+    }
+  }, [viewportTransform, getContentCenter]);
+
+  const resetZoom = useCallback(() => {
+    if (workflow.nodes.length === 0) {
+      // No nodes - just reset to origin
+      setViewportTransform({ x: 0, y: 0, scale: 1 });
+      return;
+    }
+    
+    // Find the top-left-most node (same logic as getContentCenter)
+    const topLeftNode = workflow.nodes.reduce((closest, node) => {
+      const nodeScore = node.position.x + node.position.y;
+      const closestScore = closest.position.x + closest.position.y;
+      return nodeScore < closestScore ? node : closest;
+    });
+    
+    // Calculate center of that node
+    const nodeCenterX = topLeftNode.position.x + NODE_WIDTH / 2;
+    const nodeCenterY = topLeftNode.position.y + NODE_HEIGHT / 2;
+    
+    // Center that node in the canvas viewport
+    const canvasCenterX = width / 2;
+    const canvasCenterY = height / 2;
+    
+    setViewportTransform({
+      x: canvasCenterX - nodeCenterX,
+      y: canvasCenterY - nodeCenterY,
+      scale: 1
+    });
+  }, [workflow.nodes, width, height]);
+
   return (
     <div
       ref={canvasRef}
-      className={`relative bg-gray-50 border border-gray-300 overflow-hidden ${className}`}
-      style={{ width, height }}
+      className={`relative bg-gray-50 border border-gray-300 overflow-hidden ${className} ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+      style={{ 
+        width, 
+        height,
+        touchAction: 'none', // Disable default touch behaviors
+        userSelect: 'none'   // Prevent text selection on touch
+      }}
       onClick={handleCanvasClick}
+      onMouseDown={handleCanvasMouseDown}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
     >
       <svg 
         className="absolute inset-0" 
@@ -408,6 +753,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         height={height}
         style={{ pointerEvents: 'auto' }}
       >
+        <g transform={`translate(${viewportTransform.x}, ${viewportTransform.y}) scale(${viewportTransform.scale})`}>
         {workflow.wires.map(wire => (
           <Wire
             key={wire.id}
@@ -475,24 +821,67 @@ export const Canvas: React.FC<CanvasProps> = ({
             );
           })()
         )}
+        
+        {/* Render nodes as SVG foreignObject to maintain same coordinate system */}
+        {workflow.nodes.map(node => (
+          <foreignObject
+            key={node.id}
+            x={node.position.x}
+            y={node.position.y}
+            width="160"
+            height="80"
+            style={{ pointerEvents: 'auto', overflow: 'visible' }}
+          >
+            <Node
+              node={node}
+              onNodeChange={handleNodeChange}
+              onDragEnd={handleNodeDragEnd}
+              onDelete={handleNodeDelete}
+              onEdit={handleNodeEdit}
+              onSelect={handleNodeSelect}
+              isSelected={selectedNodeId === node.id}
+              onStartConnection={handleStartConnection}
+              onEndConnection={handleEndConnection}
+              isConnecting={connectionState.isConnecting}
+            />
+          </foreignObject>
+        ))}
+        
+        </g>
       </svg>
       
-      <div className="absolute inset-0" style={{ pointerEvents: 'none' }}>
-        {workflow.nodes.map(node => (
-          <Node
-            key={node.id}
-            node={node}
-            onNodeChange={handleNodeChange}
-            onDragEnd={handleNodeDragEnd}
-            onDelete={handleNodeDelete}
-            onEdit={handleNodeEdit}
-            onSelect={handleNodeSelect}
-            isSelected={selectedNodeId === node.id}
-            onStartConnection={handleStartConnection}
-            onEndConnection={handleEndConnection}
-            isConnecting={connectionState.isConnecting}
-          />
-        ))}
+      {/* Zoom Controls */}
+      <div className="absolute bottom-4 right-4 flex flex-col gap-1 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+        <button
+          onClick={zoomIn}
+          className="w-10 h-10 flex items-center justify-center text-gray-700 hover:bg-gray-100 transition-colors border-b border-gray-200"
+          title="Zoom In"
+          type="button"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 3a.5.5 0 0 1 .5.5v4h4a.5.5 0 0 1 0 1h-4v4a.5.5 0 0 1-1 0v-4h-4a.5.5 0 0 1 0-1h4v-4A.5.5 0 0 1 8 3z"/>
+          </svg>
+        </button>
+        
+        <button
+          onClick={zoomOut}
+          className="w-10 h-10 flex items-center justify-center text-gray-700 hover:bg-gray-100 transition-colors border-b border-gray-200"
+          title="Zoom Out"
+          type="button"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
+          </svg>
+        </button>
+        
+        <button
+          onClick={resetZoom}
+          className="w-10 h-10 flex items-center justify-center text-gray-700 hover:bg-gray-100 transition-colors text-xs font-medium"
+          title="Reset Zoom (100%)"
+          type="button"
+        >
+          {Math.round(viewportTransform.scale * 100)}%
+        </button>
       </div>
     </div>
   );
