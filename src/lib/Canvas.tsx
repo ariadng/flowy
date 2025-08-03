@@ -32,7 +32,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   isSidebarOpen = false,
 }) => {
   const canvasRef = useRef<HTMLDivElement>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [connectionState, setConnectionState] = useState<ConnectionState>({
     isConnecting: false,
     sourceNodeId: null,
@@ -236,10 +236,9 @@ export const Canvas: React.FC<CanvasProps> = ({
         wires: updatedWires,
       };
     });
-    if (selectedNodeId === nodeId) {
-      setSelectedNodeId(null);
-    }
-  }, [onWorkflowChange, selectedNodeId]);
+    // Clear selection if any deleted nodes were selected
+    setSelectedNodeIds(prev => prev.filter(id => id !== nodeId));
+  }, [onWorkflowChange]);
 
   const handleNodeEdit = useCallback((nodeId: string) => {
     // For now, just log the edit action - this can be extended later
@@ -356,8 +355,24 @@ export const Canvas: React.FC<CanvasProps> = ({
     }
   }, [connectionState.isConnecting, viewportTransform, isSidebarOpen]);
 
-  const handleNodeSelect = useCallback((nodeId: string) => {
-    setSelectedNodeId(nodeId);
+  const handleNodeSelect = useCallback((nodeId: string, event?: React.MouseEvent) => {
+    const isMultiSelect = event && (event.ctrlKey || event.metaKey);
+    
+    if (isMultiSelect) {
+      // Multi-select: toggle node in selection
+      setSelectedNodeIds(prev => {
+        if (prev.includes(nodeId)) {
+          // Remove if already selected
+          return prev.filter(id => id !== nodeId);
+        } else {
+          // Add to selection
+          return [...prev, nodeId];
+        }
+      });
+    } else {
+      // Single select: replace selection
+      setSelectedNodeIds([nodeId]);
+    }
   }, []);
 
   const handleCanvasClick = useCallback((event: React.MouseEvent) => {
@@ -370,7 +385,7 @@ export const Canvas: React.FC<CanvasProps> = ({
     const isSvgBackground = target.tagName === 'svg';
     
     if (isCanvasBackground || isSvgBackground) {
-      setSelectedNodeId(null);
+      setSelectedNodeIds([]);
       // Handle connection release on blank canvas
       if (connectionState.isConnecting && connectionState.hasMouseMoved && onRequestNodeCreation) {
         const rect = canvasRef.current?.getBoundingClientRect();
@@ -406,7 +421,11 @@ export const Canvas: React.FC<CanvasProps> = ({
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     if (event.key === 'Escape') {
       // Clear selection on Esc
-      setSelectedNodeId(null);
+      setSelectedNodeIds([]);
+    } else if (event.key === 'Delete' && selectedNodeIds.length > 0) {
+      // Delete selected nodes on Delete key
+      event.preventDefault();
+      selectedNodeIds.forEach(nodeId => handleNodeDelete(nodeId));
       
       // Cancel connection if active
       if (connectionState.isConnecting) {
@@ -420,7 +439,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         });
       }
     }
-  }, [connectionState.isConnecting]);
+  }, [connectionState.isConnecting, selectedNodeIds, handleNodeDelete]);
 
   // Add mouse move listener for connection dragging
   React.useEffect(() => {
@@ -521,7 +540,27 @@ export const Canvas: React.FC<CanvasProps> = ({
     
     event.preventDefault();
     
-    const zoomFactor = 0.1;
+    // Platform-specific zoom sensitivity
+    let zoomFactor;
+    if (isMac) {
+      const isTrackpadPinch = event.ctrlKey;
+      const isTrackpadScroll = !event.ctrlKey && Math.abs(event.deltaY) < 50 && event.deltaY % 1 !== 0;
+      
+      if (isTrackpadPinch) {
+        // Pinch gestures: very small factor since deltaY can be large
+        zoomFactor = Math.abs(event.deltaY) * 0.001;
+      } else if (isTrackpadScroll) {
+        // Trackpad scroll: small factor for smooth zooming
+        zoomFactor = Math.abs(event.deltaY) * 0.01;
+      } else {
+        // Ctrl+mouse wheel: standard factor
+        zoomFactor = 0.1;
+      }
+    } else {
+      // Windows/Linux: standard mouse wheel
+      zoomFactor = 0.1;
+    }
+    
     const zoomDirection = event.deltaY > 0 ? -1 : 1;
     const newScale = Math.max(0.1, Math.min(3, viewportTransform.scale + (zoomDirection * zoomFactor)));
     
@@ -947,7 +986,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               onDelete={handleNodeDelete}
               onEdit={handleNodeEdit}
               onSelect={handleNodeSelect}
-              isSelected={selectedNodeId === node.id}
+              isSelected={selectedNodeIds.includes(node.id)}
               onStartConnection={handleStartConnection}
               onEndConnection={handleEndConnection}
               isConnecting={connectionState.isConnecting}

@@ -45,7 +45,7 @@ export interface NodeProps {
   onDragEnd?: () => void;
   onDelete: (nodeId: string) => void;
   onEdit?: (nodeId: string) => void;
-  onSelect?: (nodeId: string) => void;
+  onSelect?: (nodeId: string, event?: React.MouseEvent) => void;
   isSelected?: boolean;
   onStartConnection?: (nodeId: string, type: 'input' | 'output', index: number, position: { x: number; y: number }) => void;
   onEndConnection?: (nodeId: string, type: 'input' | 'output', index: number) => void;

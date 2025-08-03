@@ -18,6 +18,7 @@ const NodeComponent: React.FC<NodeProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [hasMouseMoved, setHasMouseMoved] = useState(false);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<Position>({ x: 0, y: 0 });
   const onNodeChangeRef = useRef(onNodeChange);
@@ -28,6 +29,31 @@ const NodeComponent: React.FC<NodeProps> = ({
     onNodeChangeRef.current = onNodeChange;
     nodeDataRef.current = node;
   });
+
+  const setHoveredWithDelay = useCallback((hovered: boolean) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    
+    if (hovered) {
+      setIsHovered(true);
+    } else {
+      // Add a small delay before hiding to allow mouse movement between elements
+      hoverTimeoutRef.current = setTimeout(() => {
+        setIsHovered(false);
+      }, 100);
+    }
+  }, []);
+
+  // Cleanup timeout on unmount
+  React.useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) {
+        clearTimeout(hoverTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleMouseDown = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -74,10 +100,17 @@ const NodeComponent: React.FC<NodeProps> = ({
     }
   }, [isConnecting, connectionSourceType, onEndConnection, isDragging, node.id, node.data.inputs, node.data.outputs]);
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((event: MouseEvent) => {
     // Only trigger selection if this was a click (no mouse movement) and not connecting
     if (!hasMouseMoved && onSelect && !isConnecting) {
-      onSelect(node.id);
+      // Create a synthetic React.MouseEvent-like object
+      const syntheticEvent = {
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+      } as React.MouseEvent;
+      onSelect(node.id, syntheticEvent);
     }
     
     setIsDragging(false);
@@ -103,11 +136,13 @@ const NodeComponent: React.FC<NodeProps> = ({
 
   const handleDelete = useCallback((event: React.MouseEvent) => {
     event.stopPropagation();
+    event.preventDefault();
     onDelete(node.id);
   }, [node.id, onDelete]);
 
   const handleEdit = useCallback((event: React.MouseEvent) => {
     event.stopPropagation();
+    event.preventDefault();
     if (onEdit) {
       onEdit(node.id);
     }
@@ -179,17 +214,15 @@ const NodeComponent: React.FC<NodeProps> = ({
       }}
       onMouseDown={handleMouseDown}
       onMouseUp={handleNodeMouseUp}
-      onMouseEnter={() => !isDragging && setIsHovered(true)}
-      onMouseLeave={() => !isDragging && setIsHovered(false)}
+      onMouseEnter={() => !isDragging && setHoveredWithDelay(true)}
+      onMouseLeave={() => !isDragging && setHoveredWithDelay(false)}
     >
       {/* Invisible bridge to maintain hover state between node and actions */}
       <div 
-        className={`absolute -top-12 left-1/2 transform -translate-x-1/2 w-20 h-12 z-10 ${
-          showActionsBar ? '' : 'pointer-events-none'
-        }`}
+        className={`absolute -top-12 left-1/2 transform -translate-x-1/2 w-24 h-12 z-10`}
         style={{ background: 'transparent' }}
-        onMouseEnter={() => !isDragging && setIsHovered(true)}
-        onMouseLeave={() => !isDragging && setIsHovered(false)}
+        onMouseEnter={() => !isDragging && setHoveredWithDelay(true)}
+        onMouseLeave={() => !isDragging && setHoveredWithDelay(false)}
       />
       
       {/* Actions bar positioned above the node */}
@@ -197,12 +230,14 @@ const NodeComponent: React.FC<NodeProps> = ({
         className={`absolute -top-12 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-md shadow-lg px-2 py-1 flex gap-1 z-20 transition-opacity duration-200 ${
           showActionsBar ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
-        onMouseEnter={() => !isDragging && setIsHovered(true)}
-        onMouseLeave={() => !isDragging && setIsHovered(false)}
+        onMouseEnter={() => !isDragging && setHoveredWithDelay(true)}
+        onMouseLeave={() => !isDragging && setHoveredWithDelay(false)}
       >
         {onEdit && (
             <button
               onClick={handleEdit}
+              onMouseDown={(e) => e.stopPropagation()}
+              onMouseEnter={() => !isDragging && setHoveredWithDelay(true)}
               className="p-1 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
               title="Edit node"
             >
@@ -211,6 +246,8 @@ const NodeComponent: React.FC<NodeProps> = ({
           )}
         <button
           onClick={handleDelete}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => !isDragging && setHoveredWithDelay(true)}
           className="p-1 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
           title="Delete node"
         >
