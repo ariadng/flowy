@@ -29,6 +29,14 @@ export interface CanvasProps {
   width?: number;
   height?: number;
   className?: string;
+  onRequestNodeCreation?: (connectionInfo: {
+    sourceNodeId: string;
+    sourceType: 'input' | 'output';
+    sourceIndex: number;
+    position: { x: number; y: number };
+  }) => void;
+  cancelConnection?: boolean;
+  isSidebarOpen?: boolean;
 }
 
 export interface NodeProps {
@@ -42,4 +50,5 @@ export interface NodeProps {
   onStartConnection?: (nodeId: string, type: 'input' | 'output', index: number, position: { x: number; y: number }) => void;
   onEndConnection?: (nodeId: string, type: 'input' | 'output', index: number) => void;
   isConnecting?: boolean;
+  connectionSourceType?: 'input' | 'output' | null;
 }

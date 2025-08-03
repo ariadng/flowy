@@ -27,6 +27,9 @@ export const Canvas: React.FC<CanvasProps> = ({
   width = 800,
   height = 600,
   className = '',
+  onRequestNodeCreation,
+  cancelConnection = false,
+  isSidebarOpen = false,
 }) => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -335,7 +338,8 @@ export const Canvas: React.FC<CanvasProps> = ({
   }, [connectionState, onWorkflowChange]);
 
   const handleMouseMove = useCallback((event: MouseEvent) => {
-    if (connectionState.isConnecting && canvasRef.current) {
+    // Only update wire position if connecting and sidebar is not open
+    if (connectionState.isConnecting && canvasRef.current && !isSidebarOpen) {
       const rect = canvasRef.current.getBoundingClientRect();
       // Convert screen coordinates to canvas coordinates considering viewport transform
       const canvasX = (event.clientX - rect.left - viewportTransform.x) / viewportTransform.scale;
@@ -350,7 +354,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         hasMouseMoved: true,
       }));
     }
-  }, [connectionState.isConnecting, viewportTransform]);
+  }, [connectionState.isConnecting, viewportTransform, isSidebarOpen]);
 
   const handleNodeSelect = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
@@ -367,19 +371,36 @@ export const Canvas: React.FC<CanvasProps> = ({
     
     if (isCanvasBackground || isSvgBackground) {
       setSelectedNodeId(null);
-      // Cancel connection if clicking on canvas
-      if (connectionState.isConnecting) {
-        setConnectionState({
-          isConnecting: false,
-          sourceNodeId: null,
-          sourceType: null,
-          sourceIndex: null,
-          currentPosition: null,
-          hasMouseMoved: false,
-        });
+      // Handle connection release on blank canvas
+      if (connectionState.isConnecting && connectionState.hasMouseMoved && onRequestNodeCreation) {
+        const rect = canvasRef.current?.getBoundingClientRect();
+        if (rect) {
+          // Convert screen coordinates to canvas coordinates
+          const canvasX = (event.clientX - rect.left - viewportTransform.x) / viewportTransform.scale;
+          const canvasY = (event.clientY - rect.top - viewportTransform.y) / viewportTransform.scale;
+          
+          // Update the current position to the click location and keep connection active
+          setConnectionState(prev => ({
+            ...prev,
+            currentPosition: { x: canvasX, y: canvasY }
+          }));
+          
+          onRequestNodeCreation({
+            sourceNodeId: connectionState.sourceNodeId!,
+            sourceType: connectionState.sourceType!,
+            sourceIndex: connectionState.sourceIndex!,
+            position: { x: canvasX, y: canvasY }
+          });
+          
+          // Don't clear connection state - keep temporary wire visible
+          return;
+        }
       }
+      
+      // Only clear selection, don't cancel connection on canvas click
+      // Connection will be cancelled when user presses Esc or closes sidebar
     }
-  }, [connectionState.isConnecting, isPanning]);
+  }, [connectionState, isPanning, onRequestNodeCreation, viewportTransform]);
 
   // Handle keyboard events
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
@@ -414,6 +435,20 @@ export const Canvas: React.FC<CanvasProps> = ({
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
+
+  // Handle connection cancellation from parent component
+  React.useEffect(() => {
+    if (cancelConnection && connectionState.isConnecting) {
+      setConnectionState({
+        isConnecting: false,
+        sourceNodeId: null,
+        sourceType: null,
+        sourceIndex: null,
+        currentPosition: null,
+        hasMouseMoved: false,
+      });
+    }
+  }, [cancelConnection, connectionState.isConnecting]);
 
   // Panning handlers
   const handleCanvasMouseDown = useCallback((event: React.MouseEvent) => {
@@ -754,6 +789,8 @@ export const Canvas: React.FC<CanvasProps> = ({
         style={{ pointerEvents: 'auto' }}
       >
         <g transform={`translate(${viewportTransform.x}, ${viewportTransform.y}) scale(${viewportTransform.scale})`}>
+        {/* Define arrow marker for temporary wires - these will be dynamically created */}
+        <defs></defs>
         {workflow.wires.map(wire => (
           <Wire
             key={wire.id}
@@ -790,34 +827,105 @@ export const Canvas: React.FC<CanvasProps> = ({
             const nodeHeight = 80;
             
             // Use the same utility function as Wire component for exact positioning
-            const sourcePosition = getHandlePosition(
+            const handlePosition = getHandlePosition(
               sourceNode,
               isOutput,
               connectionState.sourceIndex
             );
-            const sourceX = sourcePosition.x;
-            const sourceY = sourcePosition.y;
             
-            const targetX = connectionState.currentPosition.x;
-            const targetY = connectionState.currentPosition.y;
+            let sourceX, sourceY, targetX, targetY;
             
-            const controlX1 = sourceX + Math.abs(targetX - sourceX) * 0.3;
-            const controlX2 = targetX - Math.abs(targetX - sourceX) * 0.3;
+            if (isOutput) {
+              // Dragging FROM output TO cursor (normal direction)
+              sourceX = handlePosition.x;
+              sourceY = handlePosition.y;
+              targetX = connectionState.currentPosition.x;
+              targetY = connectionState.currentPosition.y;
+            } else {
+              // Dragging FROM input TO cursor (reverse direction for visual logic)
+              // Draw from cursor to input handle for proper arrow direction
+              sourceX = connectionState.currentPosition.x;
+              sourceY = connectionState.currentPosition.y;
+              targetX = handlePosition.x;
+              targetY = handlePosition.y;
+            }
             
-            const pathData = `M ${sourceX} ${sourceY} C ${controlX1} ${sourceY} ${controlX2} ${targetY} ${targetX} ${targetY}`;
+            // Calculate direction vector and offset source point to avoid handle overlap
+            const dx = targetX - sourceX;
+            const dy = targetY - sourceY;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            
+            // Calculate angle for arrow rotation with easing for curved wires
+            const rawTempAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+            // Apply same easing function as permanent wires
+            const easingFactor = Math.abs(rawTempAngle) / 180; // 0 to 1 based on angle magnitude
+            const easedTempAngle = rawTempAngle * (0.3 + easingFactor * 0.2); // Gentle easing between 30%-50% of original
+            const tempAngle = easedTempAngle;
+            
+            let adjustedSourceX = sourceX;
+            let adjustedSourceY = sourceY;
+            let adjustedTargetX = targetX;
+            let adjustedTargetY = targetY;
+            
+            if (length > 0) {
+              const unitX = dx / length;
+              const unitY = dy / length;
+              const handleOffset = 10; // Same offset as in Wire component
+              
+              if (isOutput) {
+                // Offset source (handle) forward
+                adjustedSourceX = sourceX + unitX * handleOffset;
+                adjustedSourceY = sourceY + unitY * handleOffset;
+              } else {
+                // Offset target (handle) backward  
+                adjustedTargetX = targetX - unitX * handleOffset;
+                adjustedTargetY = targetY - unitY * handleOffset;
+              }
+            }
+            
+            const controlX1 = adjustedSourceX + Math.abs(adjustedTargetX - adjustedSourceX) * 0.3;
+            const controlX2 = adjustedTargetX - Math.abs(adjustedTargetX - adjustedSourceX) * 0.3;
+            
+            const pathData = `M ${adjustedSourceX} ${adjustedSourceY} C ${controlX1} ${adjustedSourceY} ${controlX2} ${adjustedTargetY} ${adjustedTargetX} ${adjustedTargetY}`;
             
             // Color based on source handle type: green for outputs, blue for inputs
             const wireColor = isOutput ? "#10b981" : "#3b82f6"; // green-500 for output, blue-500 for input
+            const arrowId = `temp-arrow-${isOutput ? 'green' : 'blue'}-${tempAngle.toFixed(1)}`;
             
             return (
-              <path
-                d={pathData}
-                stroke={wireColor}
-                strokeWidth="2"
-                fill="none"
-                strokeDasharray="5,5"
-                style={{ pointerEvents: 'none' }}
-              />
+              <g>
+                {/* Dynamic arrow marker definition */}
+                <defs>
+                  <marker
+                    id={arrowId}
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="6"
+                    refY="4"
+                    orient={tempAngle}
+                    markerUnits="strokeWidth"
+                  >
+                    <path
+                      d="M2,2 L6,4 L2,6"
+                      stroke={wireColor}
+                      strokeWidth="1.5"
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </marker>
+                </defs>
+                
+                <path
+                  d={pathData}
+                  stroke={wireColor}
+                  strokeWidth="2"
+                  fill="none"
+                  strokeDasharray="5,5"
+                  style={{ pointerEvents: 'none' }}
+                  markerEnd={`url(#${arrowId})`}
+                />
+              </g>
             );
           })()
         )}
@@ -843,6 +951,7 @@ export const Canvas: React.FC<CanvasProps> = ({
               onStartConnection={handleStartConnection}
               onEndConnection={handleEndConnection}
               isConnecting={connectionState.isConnecting}
+              connectionSourceType={connectionState.sourceType}
             />
           </foreignObject>
         ))}

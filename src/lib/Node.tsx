@@ -13,6 +13,7 @@ const NodeComponent: React.FC<NodeProps> = ({
   onStartConnection,
   onEndConnection,
   isConnecting = false,
+  connectionSourceType = null,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -58,9 +59,24 @@ const NodeComponent: React.FC<NodeProps> = ({
     }, true); // isDragging = true
   }, [isDragging]);
 
+  const handleNodeMouseUp = useCallback((event: React.MouseEvent) => {
+    // Handle wire connection to node (not just handles) - only if we're connecting and not dragging this node
+    if (isConnecting && connectionSourceType && onEndConnection && !isDragging) {
+      event.stopPropagation();
+      // Determine which handle to connect to based on connection source type
+      if (connectionSourceType === 'output' && node.data.inputs && node.data.inputs.length > 0) {
+        // Connecting from output to this node's first input
+        onEndConnection(node.id, 'input', 0);
+      } else if (connectionSourceType === 'input' && node.data.outputs && node.data.outputs.length > 0) {
+        // Connecting from input to this node's first output
+        onEndConnection(node.id, 'output', 0);
+      }
+    }
+  }, [isConnecting, connectionSourceType, onEndConnection, isDragging, node.id, node.data.inputs, node.data.outputs]);
+
   const handleMouseUp = useCallback(() => {
-    // Only trigger selection if this was a click (no mouse movement)
-    if (!hasMouseMoved && onSelect) {
+    // Only trigger selection if this was a click (no mouse movement) and not connecting
+    if (!hasMouseMoved && onSelect && !isConnecting) {
       onSelect(node.id);
     }
     
@@ -72,7 +88,7 @@ const NodeComponent: React.FC<NodeProps> = ({
     if (onDragEnd) {
       onDragEnd();
     }
-  }, [hasMouseMoved, onSelect, node.id, onDragEnd]);
+  }, [hasMouseMoved, onSelect, node.id, onDragEnd, isConnecting]);
 
   React.useEffect(() => {
     if (isDragging) {
@@ -130,6 +146,12 @@ const NodeComponent: React.FC<NodeProps> = ({
   }, [node.id, onEndConnection, isConnecting]);
 
   const showActionsBar = isSelected || isHovered;
+  
+  // Check if this node can accept the current connection
+  const canAcceptConnection = isConnecting && connectionSourceType && (
+    (connectionSourceType === 'output' && node.data.inputs && node.data.inputs.length > 0) ||
+    (connectionSourceType === 'input' && node.data.outputs && node.data.outputs.length > 0)
+  );
 
   return (
     <div
@@ -139,11 +161,15 @@ const NodeComponent: React.FC<NodeProps> = ({
           ? '' // No transitions during dragging
           : 'transition-all duration-200'
       } ${
-        isSelected 
-          ? 'border-blue-500 shadow-lg' 
-          : isHovered 
-            ? 'border-gray-400 shadow-lg' 
-            : 'border-gray-300'
+        canAcceptConnection
+          ? connectionSourceType === 'output' 
+            ? 'border-blue-400 shadow-lg bg-blue-50' // Highlight for input target
+            : 'border-green-400 shadow-lg bg-green-50' // Highlight for output target
+          : isSelected 
+            ? 'border-blue-500 shadow-lg' 
+            : isHovered 
+              ? 'border-gray-400 shadow-lg' 
+              : 'border-gray-300'
       }`}
       style={{
         width: '160px',
@@ -152,6 +178,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         pointerEvents: 'auto',
       }}
       onMouseDown={handleMouseDown}
+      onMouseUp={handleNodeMouseUp}
       onMouseEnter={() => !isDragging && setIsHovered(true)}
       onMouseLeave={() => !isDragging && setIsHovered(false)}
     >
@@ -213,7 +240,7 @@ const NodeComponent: React.FC<NodeProps> = ({
           <div
             key={`input-${index}`}
             className={`absolute w-4 h-4 rounded-full border-2 border-white cursor-pointer transition-colors ${
-              isConnecting
+              isConnecting && connectionSourceType === 'output'
                 ? 'bg-blue-400 hover:bg-blue-500'
                 : 'bg-gray-300 hover:bg-blue-400'
             }`}
@@ -242,7 +269,7 @@ const NodeComponent: React.FC<NodeProps> = ({
           <div
             key={`output-${index}`}
             className={`absolute w-4 h-4 rounded-full border-2 border-white cursor-pointer transition-colors ${
-              isConnecting
+              isConnecting && connectionSourceType === 'input'
                 ? 'bg-green-400 hover:bg-green-500'
                 : 'bg-gray-300 hover:bg-green-400'
             }`}
